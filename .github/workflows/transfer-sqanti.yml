@@ -1,78 +1,150 @@
-name: Test ACR Docker Push
+name: Prepare ONT SQANTI transfer
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  test:
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     env:
-      ACR_NAMESPACE: wf-transcriptomes
-      ACR_REPOSITORY: acr-smoke
-      TEST_TAG: acr-smoke-test
+      SOURCE_IMAGE: docker.io/ontresearch/wf-transcriptomes-sqanti@sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+      EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+      IMAGE_TAG: sha5bd775836492699e2537ebf846098eb117191d87
+
+      ARCHIVE: wf-transcriptomes-sqanti_sha5bd775.oci.tar
+      RELEASE_TAG: sqanti-transfer-v1
 
     steps:
-      - name: Login to Alibaba Cloud ACR
-        uses: aliyun/acr-login@v1
-        with:
-          login-server: https://${{ secrets.ACR_REGISTRY }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Verify Docker login
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      - name: Check runner disk
         run: |
           set -euo pipefail
 
-          test -s "$HOME/.docker/config.json"
+          echo "===== DISK BEFORE ====="
+          df -h /
 
-          echo "ACR_DOCKER_LOGIN_PASS"
-
-      - name: Pull tiny test image
+      - name: Install skopeo
         run: |
           set -euo pipefail
 
-          docker pull hello-world:latest
+          sudo apt-get update
+          sudo apt-get install -y skopeo
 
-          docker image inspect hello-world:latest >/dev/null
+          skopeo --version
 
-          echo "TEST_IMAGE_PULL_PASS"
-
-      - name: Push tiny image to ACR
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      - name: Verify official source image
         run: |
           set -euo pipefail
 
-          DEST="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${TEST_TAG}"
+          SRC_DIGEST="$(skopeo inspect \
+            --format '{{.Digest}}' \
+            "docker://${SOURCE_IMAGE}")"
 
-          echo "Destination:"
-          echo "${DEST}"
+          echo "Expected digest: ${EXPECTED_DIGEST}"
+          echo "Source digest:   ${SRC_DIGEST}"
 
-          docker tag hello-world:latest "${DEST}"
+          test "${SRC_DIGEST}" = "${EXPECTED_DIGEST}"
 
-          docker push "${DEST}"
+          echo "SOURCE_IMAGE_PASS"
 
-          echo "ACR_DOCKER_PUSH_PASS"
-
-      - name: Verify pushed image
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+      - name: Save exact image as OCI archive
         run: |
           set -euo pipefail
 
-          DEST="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${TEST_TAG}"
+          skopeo copy \
+            --preserve-digests \
+            --retry-times 10 \
+            "docker://${SOURCE_IMAGE}" \
+            "oci-archive:${ARCHIVE}:wf-transcriptomes-sqanti:${IMAGE_TAG}"
 
-          docker manifest inspect "${DEST}" >/dev/null
+          test -s "${ARCHIVE}"
 
-          echo "ACR_SMOKE_TEST_PASS"
+          ls -lh "${ARCHIVE}"
 
-      - name: Logout
-        if: always()
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          echo "OCI_ARCHIVE_CREATED"
+
+      - name: Verify OCI archive digest
         run: |
-          docker logout "${ACR_REGISTRY}" >/dev/null 2>&1 || true
+          set -euo pipefail
+
+          ARCHIVE_DIGEST="$(skopeo inspect \
+            --format '{{.Digest}}' \
+            "oci-archive:${ARCHIVE}")"
+
+          echo "Expected digest: ${EXPECTED_DIGEST}"
+          echo "Archive digest:  ${ARCHIVE_DIGEST}"
+
+          test "${ARCHIVE_DIGEST}" = "${EXPECTED_DIGEST}"
+
+          echo "OCI_ARCHIVE_DIGEST_PASS"
+
+      - name: Create checksums and split archive
+        run: |
+          set -euo pipefail
+
+          sha256sum "${ARCHIVE}" > SHA256SUMS.archive
+
+          split \
+            --bytes=1800M \
+            --numeric-suffixes=1 \
+            --suffix-length=2 \
+            "${ARCHIVE}" \
+            "${ARCHIVE}.part"
+
+          sha256sum "${ARCHIVE}".part* > SHA256SUMS.parts
+
+          echo "===== ARCHIVE ====="
+          ls -lh "${ARCHIVE}"
+
+          echo
+          echo "===== PARTS ====="
+          ls -lh "${ARCHIVE}".part*
+
+          echo
+          echo "===== ARCHIVE SHA256 ====="
+          cat SHA256SUMS.archive
+
+          echo
+          echo "===== PART SHA256 ====="
+          cat SHA256SUMS.parts
+
+      - name: Remove previous transfer release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "${RELEASE_TAG}" \
+            --cleanup-tag \
+            --yes 2>/dev/null || true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh release create "${RELEASE_TAG}" \
+            --title "ONT wf-transcriptomes SQANTI transfer" \
+            --notes "Exact ONT wf-transcriptomes SQANTI image transfer archive."
+
+      - name: Upload split files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          gh release upload "${RELEASE_TAG}" \
+            "${ARCHIVE}".part* \
+            SHA256SUMS.archive \
+            SHA256SUMS.parts
+
+          echo "GITHUB_RELEASE_UPLOAD_PASS"
+
+      - name: Final summary
+        run: |
+          echo "SOURCE_DIGEST=${EXPECTED_DIGEST}"
+          echo "RELEASE_TAG=${RELEASE_TAG}"
+          echo "TRANSFER_PREPARATION_PASS"
