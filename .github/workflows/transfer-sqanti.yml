@@ -10,7 +10,7 @@ jobs:
 
     env:
       ACR_NAMESPACE: wf-transcriptomes
-     ACR_REPOSITORY: acr-smoke
+      ACR_REPOSITORY: acr-smoke
       TEST_TAG: acr-smoke-test
 
     steps:
