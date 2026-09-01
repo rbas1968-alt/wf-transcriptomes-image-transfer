@@ -49,32 +49,44 @@ jobs:
 
           echo "SOURCE_IMAGE_PASS"
 
-      - name: Login to Alibaba Cloud ACR
-        uses: aliyun/acr-login@v1
-        with:
-          login-server: https://${{ secrets.ACR_REGISTRY }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Login to ACR with crane
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
 
-      - name: Verify Docker ACR login
+          printf '%s' "${ACR_PASSWORD}" | \
+          crane auth login \
+            --username "${ACR_USERNAME}" \
+            --password-stdin \
+            "${ACR_REGISTRY}"
+
+          echo "CRANE_ACR_LOGIN_PASS"
+
+      - name: Verify crane auth config
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          test -s "$HOME/.docker/config.json"
-
           python3 - <<'PY'
-          import json, os
+          import json
+          import os
 
           p = os.path.expanduser("~/.docker/config.json")
-          x = json.load(open(p))
 
-          print("docker_config_exists = True")
-          print("registry_entries =", list(x.get("auths", {}).keys()))
+          if not os.path.exists(p):
+              raise SystemExit("Docker auth config not found")
+
+          data = json.load(open(p))
+
+          print("auth_config =", p)
+          print("registry_entries =", list(data.get("auths", {}).keys()))
           PY
 
-          echo "ACR_LOGIN_PASS"
+          echo "CRANE_AUTH_CONFIG_PASS"
 
       - name: Transfer exact image to ACR
         env:
@@ -115,9 +127,7 @@ jobs:
 
           echo "SQANTI_IMAGE_TRANSFER_PASS"
 
-      - name: Logout ACR
+      - name: Clean credentials
         if: always()
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
-          docker logout "${ACR_REGISTRY}" >/dev/null 2>&1 || true
+          rm -f "$HOME/.docker/config.json"
