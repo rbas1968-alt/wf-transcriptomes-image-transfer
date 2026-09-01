@@ -18,45 +18,75 @@ jobs:
     steps:
       - name: Install skopeo
         run: |
+          set -euo pipefail
+
           sudo apt-get update
           sudo apt-get install -y skopeo
+
           skopeo --version
 
       - name: Verify source image
         run: |
+          set -euo pipefail
+
           SRC_DIGEST="$(skopeo inspect \
             --format '{{.Digest}}' \
             "docker://${SOURCE_IMAGE}")"
 
-          echo "Source digest: ${SRC_DIGEST}"
+          echo "Expected source digest: ${EXPECTED_DIGEST}"
+          echo "Actual source digest:   ${SRC_DIGEST}"
 
           test "${SRC_DIGEST}" = "${EXPECTED_DIGEST}"
+
+          echo "SOURCE_IMAGE_PASS"
+
+      - name: Verify ACR login
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          test -n "${ACR_REGISTRY}"
+          test -n "${ACR_USERNAME}"
+          test -n "${ACR_PASSWORD}"
+
+          echo "${ACR_PASSWORD}" | skopeo login \
+            --username "${ACR_USERNAME}" \
+            --password-stdin \
+            "${ACR_REGISTRY}"
+
+          echo "ACR_LOGIN_PASS"
 
       - name: Transfer exact image to ACR
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
+          set -euo pipefail
+
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+
+          echo "Destination repository:"
+          echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}"
 
           skopeo copy \
             --preserve-digests \
             --retry-times 10 \
-            --dest-creds "${ACR_USERNAME}:${ACR_PASSWORD}" \
             "docker://${SOURCE_IMAGE}" \
             "docker://${DEST_IMAGE}"
+
+          echo "IMAGE_TRANSFER_FINISHED"
 
       - name: Verify ACR image digest
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
         run: |
+          set -euo pipefail
+
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
           DEST_DIGEST="$(skopeo inspect \
-            --creds "${ACR_USERNAME}:${ACR_PASSWORD}" \
             --format '{{.Digest}}' \
             "docker://${DEST_IMAGE}")"
 
