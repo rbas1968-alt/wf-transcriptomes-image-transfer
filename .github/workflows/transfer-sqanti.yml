@@ -11,15 +11,11 @@ jobs:
     env:
       SOURCE_IMAGE: docker.io/ontresearch/wf-transcriptomes-sqanti@sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
       IMAGE_TAG: sha5bd775836492699e2537ebf846098eb117191d87
-
       ACR_NAMESPACE: wf-transcriptomes
       ACR_REPOSITORY: wf-transcriptomes-sqanti
-
       EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
-      REGISTRY_AUTH_FILE: /tmp/acr-auth.json
 
     steps:
-
       - name: Install skopeo
         run: |
           set -euo pipefail
@@ -27,11 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y skopeo
 
-          echo "===== SKOPEO ====="
           skopeo --version
-
-          echo "===== DOCKER ====="
-          docker --version
 
       - name: Verify source image
         run: |
@@ -48,94 +40,33 @@ jobs:
 
           echo "SOURCE_IMAGE_PASS"
 
-      - name: Check ACR endpoint
+      - name: Login to Alibaba Cloud ACR
+        uses: aliyun/acr-login@v1
+        with:
+          login-server: https://${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Verify ACR login
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          echo "===== ACR REGISTRY ENDPOINT ====="
-
-          curl -sS \
-            --connect-timeout 10 \
-            --max-time 30 \
-            -D /tmp/acr_headers.txt \
-            -o /tmp/acr_body.txt \
-            "https://${ACR_REGISTRY}/v2/" || true
-
-          cat /tmp/acr_headers.txt
-
-          echo
-          echo "===== RESPONSE BODY ====="
-          cat /tmp/acr_body.txt || true
-
-      - name: Check GitHub secret format
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          set -euo pipefail
+          echo "===== DOCKER AUTH FILE ====="
+          test -s "$HOME/.docker/config.json"
 
           python3 - <<'PY'
-          import os
+          import json, os
 
-          for key in (
-              "ACR_REGISTRY",
-              "ACR_USERNAME",
-              "ACR_PASSWORD",
-          ):
-              value = os.environ.get(key, "")
+          p = os.path.expanduser("~/.docker/config.json")
+          x = json.load(open(p))
 
-              print(
-                  f"{key}:",
-                  f"length={len(value)}",
-                  f"empty={not bool(value)}",
-                  f"leading_whitespace={bool(value and value[0].isspace())}",
-                  f"trailing_whitespace={bool(value and value[-1].isspace())}",
-                  f"contains_CR={chr(13) in value}",
-                  f"contains_LF={chr(10) in value}",
-              )
+          print("docker_config_exists = True")
+          print("registry_entries =", list(x.get("auths", {}).keys()))
           PY
 
-          echo "SECRET_FORMAT_CHECK_FINISHED"
-
-      - name: Verify ACR login with Docker
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          printf '%s' "${ACR_PASSWORD}" | \
-          docker login \
-            --username "${ACR_USERNAME}" \
-            --password-stdin \
-            "${ACR_REGISTRY}"
-
-          echo "DOCKER_ACR_LOGIN_PASS"
-
-      - name: Verify ACR login with Skopeo
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          rm -f "${REGISTRY_AUTH_FILE}"
-
-          printf '%s' "${ACR_PASSWORD}" | \
-          skopeo login \
-            --authfile "${REGISTRY_AUTH_FILE}" \
-            --username "${ACR_USERNAME}" \
-            --password-stdin \
-            "${ACR_REGISTRY}"
-
-          test -s "${REGISTRY_AUTH_FILE}"
-
-          echo "SKOPEO_ACR_LOGIN_PASS"
+          echo "ACR_LOGIN_PASS"
 
       - name: Transfer exact image to ACR
         env:
@@ -150,10 +81,9 @@ jobs:
 
           echo
           echo "===== DESTINATION ====="
-          echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+          echo "${DEST_IMAGE}"
 
           skopeo copy \
-            --authfile "${REGISTRY_AUTH_FILE}" \
             --preserve-digests \
             --retry-times 10 \
             "docker://${SOURCE_IMAGE}" \
@@ -170,7 +100,6 @@ jobs:
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
           DEST_DIGEST="$(skopeo inspect \
-            --authfile "${REGISTRY_AUTH_FILE}" \
             --format '{{.Digest}}' \
             "docker://${DEST_IMAGE}")"
 
@@ -180,9 +109,3 @@ jobs:
           test "${DEST_DIGEST}" = "${EXPECTED_DIGEST}"
 
           echo "SQANTI_IMAGE_TRANSFER_PASS"
-
-      - name: Clean credentials
-        if: always()
-        run: |
-          rm -f "${REGISTRY_AUTH_FILE}"
-          docker logout "${{ secrets.ACR_REGISTRY }}" >/dev/null 2>&1 || true
