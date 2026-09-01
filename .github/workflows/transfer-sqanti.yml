@@ -43,7 +43,6 @@ jobs:
           skopeo copy \
             --preserve-digests \
             --retry-times 10 \
-            --image-parallel-copies 1 \
             --dest-creds "${ACR_USERNAME}:${ACR_PASSWORD}" \
             "docker://${SOURCE_IMAGE}" \
             "docker://${DEST_IMAGE}"
