@@ -1,0 +1,69 @@
+name: Transfer ONT SQANTI image
+
+on:
+  workflow_dispatch:
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      SOURCE_IMAGE: docker.io/ontresearch/wf-transcriptomes-sqanti@sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+      IMAGE_TAG: sha5bd775836492699e2537ebf846098eb117191d87
+      ACR_NAMESPACE: wf-transcriptomes
+      ACR_REPOSITORY: wf-transcriptomes-sqanti
+      EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+
+    steps:
+      - name: Install skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+          skopeo --version
+
+      - name: Verify source image
+        run: |
+          SRC_DIGEST="$(skopeo inspect \
+            --format '{{.Digest}}' \
+            "docker://${SOURCE_IMAGE}")"
+
+          echo "Source digest: ${SRC_DIGEST}"
+
+          test "${SRC_DIGEST}" = "${EXPECTED_DIGEST}"
+
+      - name: Transfer exact image to ACR
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+
+          skopeo copy \
+            --preserve-digests \
+            --retry-times 10 \
+            --image-parallel-copies 1 \
+            --dest-creds "${ACR_USERNAME}:${ACR_PASSWORD}" \
+            "docker://${SOURCE_IMAGE}" \
+            "docker://${DEST_IMAGE}"
+
+      - name: Verify ACR image digest
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+
+          DEST_DIGEST="$(skopeo inspect \
+            --creds "${ACR_USERNAME}:${ACR_PASSWORD}" \
+            --format '{{.Digest}}' \
+            "docker://${DEST_IMAGE}")"
+
+          echo "Expected digest:    ${EXPECTED_DIGEST}"
+          echo "Destination digest: ${DEST_DIGEST}"
+
+          test "${DEST_DIGEST}" = "${EXPECTED_DIGEST}"
+
+          echo "SQANTI_IMAGE_TRANSFER_PASS"
