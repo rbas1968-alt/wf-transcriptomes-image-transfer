@@ -10,28 +10,37 @@ jobs:
 
     env:
       SOURCE_IMAGE: docker.io/ontresearch/wf-transcriptomes-sqanti@sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+
       IMAGE_TAG: sha5bd775836492699e2537ebf846098eb117191d87
+
       ACR_NAMESPACE: wf-transcriptomes
       ACR_REPOSITORY: wf-transcriptomes-sqanti
+
       EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
 
+      CRANE_VERSION: v0.21.9
+
     steps:
-      - name: Install skopeo
+
+      - name: Install crane
         run: |
           set -euo pipefail
 
-          sudo apt-get update
-          sudo apt-get install -y skopeo
+          curl -fsSL \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            -o /tmp/go-containerregistry.tar.gz
 
-          skopeo --version
+          sudo tar -xzf /tmp/go-containerregistry.tar.gz \
+            -C /usr/local/bin \
+            crane
+
+          crane version
 
       - name: Verify source image
         run: |
           set -euo pipefail
 
-          SRC_DIGEST="$(skopeo inspect \
-            --format '{{.Digest}}' \
-            "docker://${SOURCE_IMAGE}")"
+          SRC_DIGEST="$(crane digest "${SOURCE_IMAGE}")"
 
           echo "Expected source digest: ${EXPECTED_DIGEST}"
           echo "Actual source digest:   ${SRC_DIGEST}"
@@ -47,13 +56,12 @@ jobs:
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Verify ACR login
+      - name: Verify Docker ACR login
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          echo "===== DOCKER AUTH FILE ====="
           test -s "$HOME/.docker/config.json"
 
           python3 - <<'PY'
@@ -83,11 +91,10 @@ jobs:
           echo "===== DESTINATION ====="
           echo "${DEST_IMAGE}"
 
-          skopeo copy \
-            --preserve-digests \
-            --retry-times 10 \
-            "docker://${SOURCE_IMAGE}" \
-            "docker://${DEST_IMAGE}"
+          crane copy \
+            --jobs 1 \
+            "${SOURCE_IMAGE}" \
+            "${DEST_IMAGE}"
 
           echo "IMAGE_TRANSFER_FINISHED"
 
@@ -99,9 +106,7 @@ jobs:
 
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
-          DEST_DIGEST="$(skopeo inspect \
-            --format '{{.Digest}}' \
-            "docker://${DEST_IMAGE}")"
+          DEST_DIGEST="$(crane digest "${DEST_IMAGE}")"
 
           echo "Expected digest:    ${EXPECTED_DIGEST}"
           echo "Destination digest: ${DEST_DIGEST}"
@@ -109,3 +114,10 @@ jobs:
           test "${DEST_DIGEST}" = "${EXPECTED_DIGEST}"
 
           echo "SQANTI_IMAGE_TRANSFER_PASS"
+
+      - name: Logout ACR
+        if: always()
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+        run: |
+          docker logout "${ACR_REGISTRY}" >/dev/null 2>&1 || true
