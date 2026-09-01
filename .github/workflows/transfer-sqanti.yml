@@ -1,133 +1,78 @@
-name: Transfer ONT SQANTI image
+name: Test ACR Docker Push
 
 on:
   workflow_dispatch:
 
 jobs:
-  transfer:
+  test:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
 
     env:
-      SOURCE_IMAGE: docker.io/ontresearch/wf-transcriptomes-sqanti@sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
-
-      IMAGE_TAG: sha5bd775836492699e2537ebf846098eb117191d87
-
       ACR_NAMESPACE: wf-transcriptomes
       ACR_REPOSITORY: wf-transcriptomes-sqanti
-
-      EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
-
-      CRANE_VERSION: v0.21.9
+      TEST_TAG: acr-smoke-test
 
     steps:
+      - name: Login to Alibaba Cloud ACR
+        uses: aliyun/acr-login@v1
+        with:
+          login-server: https://${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
-      - name: Install crane
-        run: |
-          set -euo pipefail
-
-          curl -fsSL \
-            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
-            -o /tmp/go-containerregistry.tar.gz
-
-          sudo tar -xzf /tmp/go-containerregistry.tar.gz \
-            -C /usr/local/bin \
-            crane
-
-          crane version
-
-      - name: Verify source image
-        run: |
-          set -euo pipefail
-
-          SRC_DIGEST="$(crane digest "${SOURCE_IMAGE}")"
-
-          echo "Expected source digest: ${EXPECTED_DIGEST}"
-          echo "Actual source digest:   ${SRC_DIGEST}"
-
-          test "${SRC_DIGEST}" = "${EXPECTED_DIGEST}"
-
-          echo "SOURCE_IMAGE_PASS"
-
-      - name: Login to ACR with crane
-        env:
-          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
-          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-        run: |
-          set -euo pipefail
-
-          printf '%s' "${ACR_PASSWORD}" | \
-          crane auth login \
-            --username "${ACR_USERNAME}" \
-            --password-stdin \
-            "${ACR_REGISTRY}"
-
-          echo "CRANE_ACR_LOGIN_PASS"
-
-      - name: Verify crane auth config
+      - name: Verify Docker login
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
-          import json
-          import os
+          test -s "$HOME/.docker/config.json"
 
-          p = os.path.expanduser("~/.docker/config.json")
+          echo "ACR_DOCKER_LOGIN_PASS"
 
-          if not os.path.exists(p):
-              raise SystemExit("Docker auth config not found")
+      - name: Pull tiny test image
+        run: |
+          set -euo pipefail
 
-          data = json.load(open(p))
+          docker pull hello-world:latest
 
-          print("auth_config =", p)
-          print("registry_entries =", list(data.get("auths", {}).keys()))
-          PY
+          docker image inspect hello-world:latest >/dev/null
 
-          echo "CRANE_AUTH_CONFIG_PASS"
+          echo "TEST_IMAGE_PULL_PASS"
 
-      - name: Transfer exact image to ACR
+      - name: Push tiny image to ACR
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+          DEST="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${TEST_TAG}"
 
-          echo "===== SOURCE ====="
-          echo "${SOURCE_IMAGE}"
+          echo "Destination:"
+          echo "${DEST}"
 
-          echo
-          echo "===== DESTINATION ====="
-          echo "${DEST_IMAGE}"
+          docker tag hello-world:latest "${DEST}"
 
-          crane copy \
-            --jobs 1 \
-            "${SOURCE_IMAGE}" \
-            "${DEST_IMAGE}"
+          docker push "${DEST}"
 
-          echo "IMAGE_TRANSFER_FINISHED"
+          echo "ACR_DOCKER_PUSH_PASS"
 
-      - name: Verify ACR image digest
+      - name: Verify pushed image
         env:
           ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
           set -euo pipefail
 
-          DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
+          DEST="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${TEST_TAG}"
 
-          DEST_DIGEST="$(crane digest "${DEST_IMAGE}")"
+          docker manifest inspect "${DEST}" >/dev/null
 
-          echo "Expected digest:    ${EXPECTED_DIGEST}"
-          echo "Destination digest: ${DEST_DIGEST}"
+          echo "ACR_SMOKE_TEST_PASS"
 
-          test "${DEST_DIGEST}" = "${EXPECTED_DIGEST}"
-
-          echo "SQANTI_IMAGE_TRANSFER_PASS"
-
-      - name: Clean credentials
+      - name: Logout
         if: always()
+        env:
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
         run: |
-          rm -f "$HOME/.docker/config.json"
+          docker logout "${ACR_REGISTRY}" >/dev/null 2>&1 || true
