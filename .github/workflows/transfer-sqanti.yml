@@ -14,6 +14,7 @@ jobs:
       ACR_NAMESPACE: wf-transcriptomes
       ACR_REPOSITORY: wf-transcriptomes-sqanti
       EXPECTED_DIGEST: sha256:d100245103571f71eac34bc0fe66c35c73424a359eff0acb795e26e7b6832049
+      REGISTRY_AUTH_FILE: /tmp/acr-auth.json
 
     steps:
       - name: Install skopeo
@@ -52,7 +53,9 @@ jobs:
           test -n "${ACR_USERNAME}"
           test -n "${ACR_PASSWORD}"
 
-          echo "${ACR_PASSWORD}" | skopeo login \
+          printf '%s' "${ACR_PASSWORD}" | \
+          skopeo login \
+            --authfile "${REGISTRY_AUTH_FILE}" \
             --username "${ACR_USERNAME}" \
             --password-stdin \
             "${ACR_REGISTRY}"
@@ -67,10 +70,11 @@ jobs:
 
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
-          echo "Destination repository:"
-          echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}"
+          echo "Destination:"
+          echo "${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
           skopeo copy \
+            --authfile "${REGISTRY_AUTH_FILE}" \
             --preserve-digests \
             --retry-times 10 \
             "docker://${SOURCE_IMAGE}" \
@@ -87,6 +91,7 @@ jobs:
           DEST_IMAGE="${ACR_REGISTRY}/${ACR_NAMESPACE}/${ACR_REPOSITORY}:${IMAGE_TAG}"
 
           DEST_DIGEST="$(skopeo inspect \
+            --authfile "${REGISTRY_AUTH_FILE}" \
             --format '{{.Digest}}' \
             "docker://${DEST_IMAGE}")"
 
@@ -96,3 +101,8 @@ jobs:
           test "${DEST_DIGEST}" = "${EXPECTED_DIGEST}"
 
           echo "SQANTI_IMAGE_TRANSFER_PASS"
+
+      - name: Clean credentials
+        if: always()
+        run: |
+          rm -f "${REGISTRY_AUTH_FILE}"
